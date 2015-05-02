@@ -3,7 +3,7 @@ VMs that run Theano graph computations.
 A VM is not actually different from a Linker, we just decided
 VM was a better name at some point.
 """
-import link
+from . import link
 import logging
 import os
 import sys
@@ -662,7 +662,7 @@ class Stack(VM):
 
 
 try:
-    import lazylinker_c
+    from . import lazylinker_c
 
     class CVM(lazylinker_c.CLazyLinker, VM):
 
