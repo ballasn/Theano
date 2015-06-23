@@ -3,7 +3,7 @@
 int
 APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
                         CudaNdarray *km, cudnnConvolutionDescriptor_t desc,
-                        float alpha, float beta, CudaNdarray **kerns) {
+                        float alpha, float beta, int nb_dim, CudaNdarray **kerns) {
   cudnnStatus_t err = CUDNN_STATUS_SUCCESS;
 
   if (CudaNdarray_HOST_DIMS(input)[1] != CudaNdarray_HOST_DIMS(km)[1]) {
@@ -12,9 +12,9 @@ APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
     return 1;
   }
 
-  if (c_set_tensor4d(input, APPLY_SPECIFIC(input)) == -1)
+  if (c_set_tensorNd(input, nb_dim, APPLY_SPECIFIC(input)) == -1)
     return 1;
-  if (c_set_tensor4d(output, APPLY_SPECIFIC(output)) == -1)
+  if (c_set_tensorNd(output, nb_dim, APPLY_SPECIFIC(output)) == -1)
     return 1;
 
 #ifdef CONV_INPLACE
@@ -22,13 +22,13 @@ APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
   *kerns = km;
   Py_INCREF(*kerns);
 #else
-  if (CudaNdarray_prep_output(kerns, 4, CudaNdarray_HOST_DIMS(km)) != 0)
+  if (CudaNdarray_prep_output(kerns, nb_dim, CudaNdarray_HOST_DIMS(km)) != 0)
     return 1;
   if (beta != 0.0 && CudaNdarray_CopyFromCudaNdarray(*kerns, km))
     return 1;
 #endif
 
-  if (c_set_filter(*kerns, APPLY_SPECIFIC(kerns)) == -1)
+  if (c_set_filterNd(*kerns, nb_dim, APPLY_SPECIFIC(kerns)) == -1)
     return 1;
 
   {
@@ -41,11 +41,11 @@ APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
       // Check if the input and the output have the same shape as they have
       // last time the apply node was executed
       bool same_shapes = true;
-      for (int i = 0; (i < 4) && same_shapes; i++)
+      for (int i = 0; (i < nb_dim) && same_shapes; i++)
       {
-          same_shapes &= (CudaNdarray_HOST_DIMS(input)[i] !=
+          same_shapes &= (CudaNdarray_HOST_DIMS(input)[i] ==
                           APPLY_SPECIFIC(previous_input_shape)[i]);
-          same_shapes &= (CudaNdarray_HOST_DIMS(output)[i] !=
+          same_shapes &= (CudaNdarray_HOST_DIMS(output)[i] ==
                           APPLY_SPECIFIC(previous_output_shape)[i]);
       }
 
@@ -86,7 +86,7 @@ APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
         // Store the shapes of the inputs and kernels as well as the chosen
         // algorithm for future use.
         APPLY_SPECIFIC(previous_bwd_f_algo) = chosen_algo;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < nb_dim; i++)
         {
             APPLY_SPECIFIC(previous_input_shape)[i] =
                                             CudaNdarray_HOST_DIMS(input)[i];
@@ -113,7 +113,7 @@ APPLY_SPECIFIC(conv_gw)(CudaNdarray *input, CudaNdarray *output,
     // If the chosen implementation is FFT, validate that it can be used
     // on the current data and default on a safe implementation if it
     // can't.
-    if (chosen_algo == CUDNN_CONVOLUTION_BWD_FILTER_ALGO_FFT)
+    if (chosen_algo == CUDNN_CONVOLUTION_BWD_FILTER_ALGO_FFT && nb_dim == 4)
     {
 
       // Extract the properties of the convolution descriptor
