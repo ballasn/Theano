@@ -411,7 +411,7 @@ class GpuDnnConv3dDesc(GpuOp):
 
         if isinstance(self.border_mode, tuple):
             pad_d_spec, pad_h_spec, pad_w_spec = map(int, self.border_mode)
-            assert pad_d_spec, pad_h_spec >= 0 and pad_w_spec >= 0
+            assert pad_d_spec >= 0 and  pad_h_spec >= 0 and pad_w_spec >= 0
             bmode = 2
         else:
             pad_d_spec = pad_h_spec = pad_w_spec = 0
@@ -728,8 +728,8 @@ class GpuDnnConv3d(GpuDnnConv):
 
         top = gpu_contiguous(top)
 
-        d_img = GpuDnnConvGrad3dI()(kerns, top, gpu_alloc_empty(*img.shape), desc)
-        d_kerns = GpuDnnConvGrad3dW()(img, top, gpu_alloc_empty(*kerns.shape), desc)
+        d_img = GpuDnnConv3dGradI()(kerns, top, gpu_alloc_empty(*img.shape), desc)
+        d_kerns = GpuDnnConv3dGradW()(img, top, gpu_alloc_empty(*kerns.shape), desc)
         d_alpha = grad_not_implemented(self, 4, alpha)
         d_beta = grad_not_implemented(self, 5, beta)
         d_nb_dim = grad_not_implemented(self, 6, nb_dim)
@@ -1210,6 +1210,7 @@ def dnn_conv3d(img, kerns, border_mode='valid', subsample=(1, 1, 1),
     :warning: dnn_conv3d only works with cuDNN library 3.0
 
     """
+    print "s:", subsample
     fgraph = getattr(img, 'fgraph', None) or getattr(kerns, 'fgraph', None)
     if (border_mode == 'valid' and subsample == (1, 1, 1) and
         direction_hint == 'bprop weights'):
