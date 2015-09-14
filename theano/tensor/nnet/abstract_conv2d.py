@@ -438,9 +438,9 @@ def local_conv2d_corrmm(node):
         return None
 
 
-    if node.op.border_mode in ['full', 'valid']:
-        border_mode = node.op.border_mode
-        subsample = node.op.subsample
+    border_mode = node.op.border_mode
+    subsample = node.op.subsample
+    if border_mode in ['full', 'valid']:
         if (border_mode == 'valid') or (subsample != (1,1)):
             # need to flip the kernel for valid convolution
             if node.op.filters_flip:
@@ -485,7 +485,15 @@ def local_conv2d_corrmm(node):
             # call GpuCorrMM_gradInputs
             rval = GpuCorrMM_gradInputs('valid', subsample)(
                     gpu_contiguous(kern), gpu_contiguous(img))
-        return [rval]
+
+    else: # border_mode is a pair of integers
+        # need to flip the kernel for valid convolution
+        if node.op.filters_flip:
+            kern = kern[:, :, ::-1, ::-1]
+        rval = GpuCorrMM(border_mode, subsample)(gpu_contiguous(img),
+                                                 gpu_contiguous(kern))
+
+    return [rval]
 register_specialize_device(local_conv2d_corrmm, 'conv_gemm')
 
 @local_optimizer([AbstractConv2d_gradWeights])
