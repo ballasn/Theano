@@ -245,8 +245,8 @@ class AbstractConv2d_gradWeights(BaseAbstractConv2d):
                                  ' or border_mode == "half"')
 
         shape = as_tensor_variable(shape)
-        broadcastable=[topgrad.broadcastable[0],
-                       img.broadcastable[0],
+        broadcastable=[topgrad.broadcastable[1],
+                       img.broadcastable[1],
                        False, False]
         output = img.type.clone(broadcastable=broadcastable)()
         return Apply(self, [img, topgrad, shape], [output])
@@ -312,7 +312,7 @@ class AbstractConv2d_gradInputs(BaseAbstractConv2d):
         return Apply(self, [kern, topgrad, shape], [output])
 
 
-    def perform(self, node, nodename, inp, out_):
+    def perform(self, node, inp, out_):
         raise NotImplementedError('AbstractConv2d_gradWeight theano optimization failed')
 
     def grad(self, inp, grads):
@@ -437,63 +437,56 @@ def local_conv2d_corrmm(node):
             not isinstance(kern.type, CudaNdarrayType)):
         return None
 
-
     border_mode = node.op.border_mode
     subsample = node.op.subsample
-    if border_mode in ['full', 'valid']:
-        if (border_mode == 'valid') or (subsample != (1,1)):
-            # need to flip the kernel for valid convolution
-            if node.op.filters_flip:
-                kern = kern[:, :, ::-1, ::-1]
-            # By default use GpuCorrMM
-            rval = GpuCorrMM(border_mode, subsample)(gpu_contiguous(img),
-                                                     gpu_contiguous(kern))
-
-            # call GpuCorrMM_gradWeights if good
-            # (the latter is faster if batchsize * kernelHeight * kernelWidth
-            # is larger than inputChannels * outputHeight * outputWidth.
-            # GpuConv does not always store information on the batchsize and
-            # channels, though, so we only use what information we have.)
-            if ((subsample == (1,1)) and
-                (node.op.imshp is not None) and
-                (None not in node.op.imshp[-2:]) and
-                (node.op.kshp is not None) and
-                (None not in node.op.kshp)):
-                # we know the kernel and output size
-                prod1 = node.op.kshp[0] * node.op.kshp[1]
-                prod2 = ((node.op.imshp[-2] - node.op.kshp[0] + 1) *
-                         (node.op.imshp[-1] - node.op.kshp[1] + 1))
-                if ((node.op.bsize is not None) and
-                        (len(node.op.imshp) == 3) and
-                        (node.op.imshp[0] is not None)):
-                    # we also know batchsize and input channels
-                    prod1 *= node.op.bsize
-                    prod2 *= node.op.imshp[0]
-                # compare to decide
-                if prod1 > prod2:
-                    # (we need to wrap the result in as_cuda_ndarray_variable,
-                    # because we are not allowed to replace a CudaNdarray with
-                    # a DimShuffle instance in a graph optimization)
-                    rval = theano.sandbox.cuda.as_cuda_ndarray_variable(
-                        GpuCorrMM_gradWeights(border_mode, subsample)(
-                            gpu_contiguous(img.dimshuffle(1, 0, 2, 3)),
-                            gpu_contiguous(kern.dimshuffle(1, 0, 2, 3))
-                        ).dimshuffle(1, 0, 2, 3))
-        elif (border_mode == 'full'):
-            # need to dimshuffle the kernel for full convolution
-            kern = kern.dimshuffle(1, 0, 2, 3)
-            # call GpuCorrMM_gradInputs
-            rval = GpuCorrMM_gradInputs('valid', subsample)(
-                    gpu_contiguous(kern), gpu_contiguous(img))
-
-    else: # border_mode is a pair of integers
-        # need to flip the kernel for valid convolution
+    if (border_mode == 'full') and (subsample == (1, 1)):
+        if not node.op.filters_flip:
+            kern = kern[:, :, ::-1, ::-1]
+        # need to dimshuffle the kernel for full convolution
+        kern = kern.dimshuffle(1, 0, 2, 3)
+        # call GpuCorrMM_gradInputs
+        rval = GpuCorrMM_gradInputs('valid', subsample)(
+                gpu_contiguous(kern), gpu_contiguous(img))
+    else:
+        # need to flip the kernel if necessary
         if node.op.filters_flip:
             kern = kern[:, :, ::-1, ::-1]
+        # By default use GpuCorrMM
         rval = GpuCorrMM(border_mode, subsample)(gpu_contiguous(img),
                                                  gpu_contiguous(kern))
 
+        # call GpuCorrMM_gradWeights if good
+        # (the latter is faster if batchsize * kernelHeight * kernelWidth
+        # is larger than inputChannels * outputHeight * outputWidth.
+        # GpuConv does not always store information on the batchsize and
+        # channels, though, so we only use what information we have.)
+        if ((subsample == (1,1)) and
+            (node.op.imshp is not None) and
+            (None not in node.op.imshp[-2:]) and
+            (node.op.kshp is not None) and
+            (None not in node.op.kshp)):
+            # we know the kernel and output size
+            prod1 = node.op.kshp[0] * node.op.kshp[1]
+            prod2 = ((node.op.imshp[-2] - node.op.kshp[0] + 1) *
+                     (node.op.imshp[-1] - node.op.kshp[1] + 1))
+            if ((node.op.bsize is not None) and
+                    (len(node.op.imshp) == 3) and
+                    (node.op.imshp[0] is not None)):
+                # we also know batchsize and input channels
+                prod1 *= node.op.bsize
+                prod2 *= node.op.imshp[0]
+            # compare to decide
+            if prod1 > prod2:
+                # (we need to wrap the result in as_cuda_ndarray_variable,
+                # because we are not allowed to replace a CudaNdarray with
+                # a DimShuffle instance in a graph optimization)
+                rval = theano.sandbox.cuda.as_cuda_ndarray_variable(
+                    GpuCorrMM_gradWeights(border_mode, subsample)(
+                        gpu_contiguous(img.dimshuffle(1, 0, 2, 3)),
+                        gpu_contiguous(kern.dimshuffle(1, 0, 2, 3))
+                    ).dimshuffle(1, 0, 2, 3))
     return [rval]
+
 register_specialize_device(local_conv2d_corrmm, 'conv_gemm')
 
 @local_optimizer([AbstractConv2d_gradWeights])
@@ -509,8 +502,8 @@ def local_conv2d_gradweight_corrmm(node):
         gpu_contiguous(img), gpu_contiguous(topgrad), shape)
     if node.op.filters_flip:
         rval = rval[:, :, ::-1, ::-1]
-        rval = as_cuda_ndarray_variable(rval)
-    #rval = patternbroadcast(rval, node.outputs[0].broadcastable)
+    rval = patternbroadcast(rval, node.outputs[0].broadcastable)
+    rval = as_cuda_ndarray_variable(rval)
     return [rval]
 register_specialize_device(local_conv2d_gradweight_corrmm, 'conv_gemm')
 
@@ -573,7 +566,7 @@ def local_conv2d_gradweight_cpu(node):
         return
 
     if node.op.border_mode == 'valid' and \
-            (node.op.subsample != (1, 1) or node.op.imshp is None or node.op.kshp is None):
+            (node.op.subsample != (1, 1)):
         # Use the gradient as defined in conv3D, because the implementation
         # by Conv is slow (about 3x slower than conv3D, and probably 10x
         # slower than it could be), nad incorrect when subsample > 2.
@@ -594,17 +587,34 @@ def local_conv2d_gradweight_cpu(node):
         rval = patternbroadcast(rval, node.outputs[0].broadcastable)
         return [rval]
 
-    if node.op.imshp is None or node.op.kshp is None:
+    dx, dy = node.op.subsample
+    if dx not in (1, 2) or dy not in (1, 2):
+        # Not implemented in the gradient of ConvOp
         return None
 
-    ####### Determine gradient on kernels ########
-    assert len(node.op.imshp) == 4 and len(node.op.kshp) == 4
+    if node.op.imshp is None:
+        op_imshp = (None, None, None, None)
+    else:
+        op_imshp = node.op.imshp
 
-    outshp = ConvOp.getOutputShape(node.op.imshp[2:],
-                                   node.op.kshp[2:],  node.op.subsample,
+    if node.op.kshp is None:
+        op_kshp = (None, None, None, None)
+    else:
+        op_kshp = node.op.kshp
+
+    if None in op_imshp or None in op_kshp:
+        if (dx, dy) != (1, 1):
+            # We cannot infer the shapes
+            return None
+
+    ####### Determine gradient on kernels ########
+    assert len(op_imshp) == 4 and len(op_kshp) == 4
+
+    outshp = ConvOp.getOutputShape(op_imshp[2:],
+                                   op_kshp[2:],  node.op.subsample,
                                    node.op.border_mode)
-    fulloutshp = ConvOp.getOutputShape(node.op.imshp[2:],
-                                       node.op.kshp[2:], (1, 1),
+    fulloutshp = ConvOp.getOutputShape(op_imshp[2:],
+                                       op_kshp[2:], (1, 1),
                                        node.op.border_mode)
 
     newimg = img.dimshuffle((1, 0, 2, 3))
@@ -615,25 +625,25 @@ def local_conv2d_gradweight_cpu(node):
         kshp_logical = fulloutshp
         kshp_logical_top_aligned = False
         imshp_logical = None
-        (bsize, nkern) = (node.op.imshp[1], node.op.kshp[0])
-        imshp = (node.op.imshp[0], node.op.imshp[2], node.op.imshp[3])
+        (bsize, nkern) = (op_imshp[1], op_kshp[0])
+        imshp = (op_imshp[0], op_imshp[2], op_imshp[3])
         kshp = outshp
     elif node.op.border_mode == 'full':
         (img, filters) = (newtopgrad, newimg)
         kshp_logical = None
         kshp_logical_top_aligned = True
-        imshp_logical = (node.op.imshp[0],
+        imshp_logical = (op_imshp[0],
                          fulloutshp[0],
                          fulloutshp[1])
-        (bsize, nkern) = (node.op.kshp[0], node.op.imshp[1])
-        imshp = (node.op.imshp[0], outshp[0], outshp[1])
-        kshp = node.op.imshp[2:]
+        (bsize, nkern) = (op_kshp[0], op_imshp[1])
+        imshp = (op_imshp[0], outshp[0], outshp[1])
+        kshp = op_imshp[2:]
     else:
         raise NotImplementedError(
             'Only [full,valid] modes are currently supported.')
 
-    if node.op.filters_flip:
-        filters = filters[:, :, ::-1, ::-1]  # flip them
+    # Flip the kernels
+    filters = filters[:, :, ::-1, ::-1]
 
     dw = ConvOp(imshp, kshp, nkern, bsize, 1, 1, output_mode='valid',
                 unroll_batch=None, unroll_kern=None, unroll_patch=None,
@@ -642,8 +652,10 @@ def local_conv2d_gradweight_cpu(node):
                 kshp_logical_top_aligned=kshp_logical_top_aligned,
                 direction_hint='bprop weights')
     res = dw(img, filters)
-    res = res.dimshuffle((1, 0, 2, 3))
-    res = res[:, :, ::-1, ::-1]
+    if node.op.border_mode == 'valid':
+        res = res.dimshuffle((1, 0, 2, 3))
+        res = res[:, :, ::-1, ::-1]
+
     res = patternbroadcast(res, node.outputs[0].broadcastable)
     return [res]
 register_specialize_device(local_conv2d_gradweight_cpu)
@@ -663,8 +675,7 @@ def local_conv2d_gradinputs_cpu(node):
         return None
 
     ### Conv 3d implementation, needed when subsample > 2
-    if node.op.border_mode == 'valid' and \
-            (node.op.subsample != (1, 1) or node.op.imshp is None or node.op.kshp is None):
+    if node.op.border_mode == 'valid' and node.op.subsample != (1, 1):
         kern = kern[:, :, ::-1, ::-1]
         shuffled_kern = kern.dimshuffle(0, 2, 3, 'x', 1)
         shuffled_topgrad = topgrad.dimshuffle(0, 2, 3, 'x', 1)
@@ -679,27 +690,44 @@ def local_conv2d_gradinputs_cpu(node):
         return [rval]
 
     ### Conv2d Implementation
-    if node.op.imshp is None or node.op.kshp is None:
+    dx, dy = node.op.subsample
+    if dx not in (1, 2) or dy not in (1, 2):
+        # Not implemented in the gradient of ConvOp
         return None
+
+    if node.op.imshp is None:
+        op_imshp = (None, None, None, None)
+    else:
+        op_imshp = node.op.imshp
+
+    if node.op.kshp is None:
+        op_kshp = (None, None, None, None)
+    else:
+        op_kshp = node.op.kshp
+
+    if None in op_imshp or None in op_kshp:
+        if (dx, dy) != (1, 1):
+            return None
+
     mode = 'valid'
     if not node.op.border_mode == 'full':
         mode = 'full'
     filters = kern.dimshuffle((1, 0, 2, 3))
     filters = filters[:, :, ::-1, ::-1]
 
-    outshp = ConvOp.getOutputShape(node.op.imshp[2:],
-                                   node.op.kshp[2:],  node.op.subsample,
+    outshp = ConvOp.getOutputShape(op_imshp[2:],
+                                   op_kshp[2:],  node.op.subsample,
                                    node.op.border_mode)
-    fulloutshp = ConvOp.getOutputShape(node.op.imshp[2:],
-                                       node.op.kshp[2:], (1, 1),
+    fulloutshp = ConvOp.getOutputShape(op_imshp[2:],
+                                       op_kshp[2:], (1, 1),
                                        node.op.border_mode)
-    nkern = node.op.imshp[1]
-    imshp = (node.op.kshp[0], outshp[0], outshp[1])
-    imshp_logical = (node.op.kshp[0], fulloutshp[0], fulloutshp[1])
+    nkern = op_imshp[1]
+    imshp = (op_kshp[0], outshp[0], outshp[1])
+    imshp_logical = (op_kshp[0], fulloutshp[0], fulloutshp[1])
     din = ConvOp(imshp,
-                 node.op.kshp[2:],
+                 op_kshp[2:],
                  nkern,
-                 node.op.imshp[0],
+                 op_imshp[0],
                  1, 1, output_mode=mode,
                  unroll_batch=None, unroll_kern=None,
                  unroll_patch=None,
