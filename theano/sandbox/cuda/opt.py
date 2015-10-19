@@ -2718,12 +2718,10 @@ def local_abstractconv_gemm(node):
             prod1 = node.op.kshp[0] * node.op.kshp[1]
             prod2 = ((node.op.imshp[-2] - node.op.kshp[0] + 1) *
                      (node.op.imshp[-1] - node.op.kshp[1] + 1))
-            if ((node.op.bsize is not None) and
-                    (len(node.op.imshp) == 3) and
-                    (node.op.imshp[0] is not None)):
+            if (None not in node.op.imshp[:1]):
                 # we also know batchsize and input channels
-                prod1 *= node.op.bsize
-                prod2 *= node.op.imshp[0]
+                prod1 *= node.op.imshp[0]
+                prod2 *= node.op.imshp[1]
             # compare to decide
             if prod1 > prod2:
                 # (we need to wrap the result in as_cuda_ndarray_variable,
